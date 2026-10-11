@@ -31,7 +31,14 @@ let cachedState: HyperliquidClearinghouseState | null = null;
 /**
  * Tool definitions for the agent
  */
-const tools: Groq.Chat.CompletionCreateParams.Tool[] = [
+const tools: Array<{
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: any;
+  };
+}> = [
   {
     type: "function",
     function: {
@@ -283,7 +290,7 @@ export async function runAnalysis(address: string): Promise<{
   }
 
   // Initialize conversation
-  const messages: Groq.Chat.CompletionCreateParamsNonStreaming["messages"] = [
+  const messages: Array<any> = [
     {
       role: "system",
       content: SYSTEM_PROMPT,
@@ -376,7 +383,7 @@ export async function runAnalysis(address: string): Promise<{
 export async function runChat(
   address: string,
   question: string,
-  conversationHistory: Groq.Chat.CompletionCreateParamsNonStreaming["messages"] = []
+  conversationHistory: Array<any> = []
 ): Promise<string> {
   // Ensure we have cached data
   if (cachedAddress !== address || cachedFills.length === 0) {
@@ -388,7 +395,7 @@ export async function runChat(
     cachedState = walletData.clearinghouseState;
   }
 
-  const messages: Groq.Chat.CompletionCreateParamsNonStreaming["messages"] = [
+  const messages: Array<any> = [
     {
       role: "system",
       content: SYSTEM_PROMPT,
