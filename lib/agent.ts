@@ -1,0 +1,447 @@
+// AI Trading Coach Agent - Anthropic tool-use loop
+
+import Anthropic from "@anthropic-ai/sdk";
+import {
+  getOverview,
+  getCoinBreakdown,
+  getFeeDragAnalysis,
+  getLossStreakBehavior,
+  getFilteredFills,
+} from "./stats";
+import { fetchWalletData } from "./hyperliquid";
+import type {
+  HyperliquidFill,
+  HyperliquidFunding,
+  HyperliquidClearinghouseState,
+  AgentFinding,
+  AutopsyResponse,
+} from "./types";
+
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY || "",
+});
+
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+const MAX_TOOL_ROUNDS = 8;
+
+// Cached wallet data for the session
+let cachedAddress: string | null = null;
+let cachedFills: HyperliquidFill[] = [];
+let cachedFunding: HyperliquidFunding[] = [];
+let cachedState: HyperliquidClearinghouseState | null = null;
+
+/**
+ * Tool definitions for the agent
+ */
+const tools: Anthropic.Tool[] = [
+  {
+    name: "get_overview",
+    description:
+      "Get comprehensive overview statistics including total PnL, fees, funding, win rate, profit factor, and time range. Always call this first.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "get_coin_breakdown",
+    description:
+      "Get per-coin breakdown showing trades, PnL, fees, net PnL and win rate for each asset traded. Sorted by net PnL descending.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "get_loss_streak_behavior",
+    description:
+      "Analyze position sizing after consecutive losses (tilt metric). Shows average position size at baseline vs after 1, 2, or 3+ losses. Size multiple > 1.5 indicates revenge trading/tilt.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "get_fee_and_funding_drag",
+    description:
+      "Analyze fee drag and funding costs. Shows total fees, fees as % of gross profit, count of high-fee trades (where fee > 30% of PnL), total funding paid/received.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "get_fills",
+    description:
+      "Get filtered list of fills (capped at 50). Use to investigate specific coins, PnL ranges, or recent trades. DO NOT request all fills without filters.",
+    input_schema: {
+      type: "object",
+      properties: {
+        coin: {
+          type: "string",
+          description: "Filter by coin symbol (e.g., 'BTC', 'ETH', '@107')",
+        },
+        minPnl: {
+          type: "number",
+          description: "Minimum realized PnL (for finding wins)",
+        },
+        maxPnl: {
+          type: "number",
+          description: "Maximum realized PnL (for finding losses)",
+        },
+        limit: {
+          type: "number",
+          description: "Max results to return (default 50, max 50)",
+        },
+      },
+    },
+  },
+  {
+    name: "get_current_positions",
+    description:
+      "Get current open positions and account value from the latest clearinghouse state.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+];
+
+/**
+ * System prompt for the trading coach agent
+ */
+const SYSTEM_PROMPT = `You are a trading behavior analyst for Hyperliquid perpetual futures traders. Your job is to investigate a wallet's trading history and write a plain-English autopsy backed by evidence.
+
+RULES:
+1. Use tools to gather evidence before claiming anything. Never calculate or invent statistics yourself.
+2. Only state numbers returned by tools. All metrics are computed server-side in code.
+3. Cite evidence for each finding: coin names, trade counts, time ranges, exact numbers.
+4. Describe behavior and patterns. NEVER give financial advice or tell the user to buy/sell.
+5. If data is thin (< 20 trades), say so and keep findings brief.
+6. Limit tool use to ${MAX_TOOL_ROUNDS} rounds maximum.
+
+OUTPUT STRUCTURE:
+1. Summary (2-3 sentences): Overall performance and key insight
+2. Top 3 Findings (each with evidence):
+   - Title (5-7 words)
+   - Description (2-3 sentences with specific numbers and coins)
+   - Evidence (trade count, time range, or coin list)
+3. One thing to try differently (framed as an observation, NOT advice):
+   - "Consider X" or "Worth noting that Y" (1-2 sentences)
+
+EVIDENCE EXAMPLES:
+- "38 trades on BTC between Jan 15-Feb 20"
+- "5 trades where fee exceeded 30% of gross PnL"
+- "Position size rose 2.1x after 3+ consecutive losses"
+- "Weekend long positions cost $310 in funding"
+
+BEHAVIORAL FOCUS:
+- Overtrading (high trade count vs PnL)
+- Fee drag (fees eating into profits)
+- Revenge trading after losses (size creep, tilt)
+- Funding bleed (holding expensive positions)
+- Coin concentration (too much in one asset)
+- Size discipline (leverage creep)
+
+Start by calling get_overview, then investigate specific patterns you see.`;
+
+/**
+ * Execute a tool call
+ */
+async function executeTool(
+  toolName: string,
+  toolInput: Record<string, any>
+): Promise<any> {
+  console.log(`[AGENT] Executing tool: ${toolName}`, toolInput);
+
+  switch (toolName) {
+    case "get_overview": {
+      const result = getOverview(cachedFills, cachedFunding);
+      return result;
+    }
+
+    case "get_coin_breakdown": {
+      const breakdown = getCoinBreakdown(cachedFills);
+      return breakdown;
+    }
+
+    case "get_loss_streak_behavior": {
+      const behavior = getLossStreakBehavior(cachedFills);
+      return behavior;
+    }
+
+    case "get_fee_and_funding_drag": {
+      const feeAnalysis = getFeeDragAnalysis(cachedFills);
+      const fundingStats = cachedFunding.reduce(
+        (acc, f) => {
+          const amount = parseFloat(f.delta.usdc);
+          if (amount < 0) acc.totalPaid += Math.abs(amount);
+          else if (amount > 0) acc.totalReceived += amount;
+          return acc;
+        },
+        { totalPaid: 0, totalReceived: 0 }
+      );
+
+      return {
+        ...feeAnalysis,
+        totalFundingPaid: fundingStats.totalPaid,
+        totalFundingReceived: fundingStats.totalReceived,
+        netFunding: fundingStats.totalReceived - fundingStats.totalPaid,
+      };
+    }
+
+    case "get_fills": {
+      const { coin, minPnl, maxPnl, limit } = toolInput;
+      const fills = getFilteredFills(cachedFills, {
+        coin,
+        minPnl,
+        maxPnl,
+        limit: Math.min(limit || 50, 50),
+      });
+
+      // Return simplified version to save context
+      return fills.map((f) => ({
+        coin: f.coin,
+        side: f.side,
+        size: f.sz,
+        price: f.px,
+        closedPnl: f.closedPnl,
+        fee: f.fee,
+        time: new Date(f.time).toISOString(),
+      }));
+    }
+
+    case "get_current_positions": {
+      if (!cachedState) {
+        return { message: "No open positions or clearinghouse state unavailable" };
+      }
+
+      return {
+        accountValue: cachedState.marginSummary.accountValue,
+        positions: cachedState.assetPositions.map((p) => ({
+          coin: p.coin,
+          size: p.szi,
+          entryPrice: p.entryPx,
+          unrealizedPnl: p.unrealizedPnl,
+        })),
+      };
+    }
+
+    default:
+      throw new Error(`Unknown tool: ${toolName}`);
+  }
+}
+
+/**
+ * Run the agent loop
+ */
+export async function runAnalysis(address: string): Promise<{
+  autopsy: string;
+  toolCalls: Array<{ tool: string; input: any; output: any }>;
+}> {
+  // Fetch and cache wallet data
+  console.log(`[AGENT] Fetching wallet data for ${address}...`);
+  const walletData = await fetchWalletData(address);
+
+  cachedAddress = address;
+  cachedFills = walletData.fills;
+  cachedFunding = walletData.funding;
+  cachedState = walletData.clearinghouseState;
+
+  console.log(
+    `[AGENT] Loaded ${cachedFills.length} fills, ${cachedFunding.length} funding payments`
+  );
+
+  // Check if data is too sparse
+  if (cachedFills.length < 5) {
+    return {
+      autopsy:
+        "This wallet has fewer than 5 trades recorded. Not enough data to provide meaningful analysis. Try a more active address.",
+      toolCalls: [],
+    };
+  }
+
+  // Initialize conversation
+  const messages: Anthropic.MessageParam[] = [
+    {
+      role: "user",
+      content: `Analyze the trading behavior for Hyperliquid address ${address}. The wallet has ${cachedFills.length} fills. Investigate and write the autopsy.`,
+    },
+  ];
+
+  const toolCalls: Array<{ tool: string; input: any; output: any }> = [];
+  let toolRounds = 0;
+
+  // Agent loop
+  while (toolRounds < MAX_TOOL_ROUNDS) {
+    const response = await anthropic.messages.create({
+      model: MODEL,
+      max_tokens: 4000,
+      system: SYSTEM_PROMPT,
+      tools,
+      messages,
+    });
+
+    console.log(`[AGENT] Round ${toolRounds + 1}, stop_reason: ${response.stop_reason}`);
+
+    // Check if agent is done
+    if (response.stop_reason === "end_turn") {
+      // Extract final text
+      const textContent = response.content.find((c) => c.type === "text");
+      if (textContent && textContent.type === "text") {
+        return {
+          autopsy: textContent.text,
+          toolCalls,
+        };
+      }
+    }
+
+    // Process tool uses
+    if (response.stop_reason === "tool_use") {
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+      for (const content of response.content) {
+        if (content.type === "tool_use") {
+          try {
+            const result = await executeTool(content.name, content.input);
+            toolCalls.push({
+              tool: content.name,
+              input: content.input,
+              output: result,
+            });
+
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: content.id,
+              content: JSON.stringify(result, null, 2),
+            });
+          } catch (error) {
+            console.error(`[AGENT] Tool error:`, error);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: content.id,
+              content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+              is_error: true,
+            });
+          }
+        }
+      }
+
+      // Add assistant message and tool results
+      messages.push({
+        role: "assistant",
+        content: response.content,
+      });
+
+      messages.push({
+        role: "user",
+        content: toolResults,
+      });
+
+      toolRounds++;
+    } else {
+      // Unexpected stop reason
+      console.warn(`[AGENT] Unexpected stop_reason: ${response.stop_reason}`);
+      break;
+    }
+  }
+
+  // Max rounds reached
+  const textContent = messages[messages.length - 1];
+  return {
+    autopsy:
+      "Analysis incomplete: reached maximum tool rounds. The agent investigated but did not finish the autopsy. Try again or contact support.",
+    toolCalls,
+  };
+}
+
+/**
+ * Run chat follow-up
+ */
+export async function runChat(
+  address: string,
+  question: string,
+  conversationHistory: Anthropic.MessageParam[] = []
+): Promise<string> {
+  // Ensure we have cached data
+  if (cachedAddress !== address || cachedFills.length === 0) {
+    console.log(`[AGENT] Loading wallet data for chat...`);
+    const walletData = await fetchWalletData(address);
+    cachedAddress = address;
+    cachedFills = walletData.fills;
+    cachedFunding = walletData.funding;
+    cachedState = walletData.clearinghouseState;
+  }
+
+  const messages: Anthropic.MessageParam[] = [
+    ...conversationHistory,
+    {
+      role: "user",
+      content: question,
+    },
+  ];
+
+  let toolRounds = 0;
+
+  while (toolRounds < MAX_TOOL_ROUNDS) {
+    const response = await anthropic.messages.create({
+      model: MODEL,
+      max_tokens: 2000,
+      system: SYSTEM_PROMPT,
+      tools,
+      messages,
+    });
+
+    if (response.stop_reason === "end_turn") {
+      const textContent = response.content.find((c) => c.type === "text");
+      if (textContent && textContent.type === "text") {
+        return textContent.text;
+      }
+    }
+
+    if (response.stop_reason === "tool_use") {
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+      for (const content of response.content) {
+        if (content.type === "tool_use") {
+          try {
+            const result = await executeTool(content.name, content.input);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: content.id,
+              content: JSON.stringify(result, null, 2),
+            });
+          } catch (error) {
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: content.id,
+              content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+              is_error: true,
+            });
+          }
+        }
+      }
+
+      messages.push({
+        role: "assistant",
+        content: response.content,
+      });
+
+      messages.push({
+        role: "user",
+        content: toolResults,
+      });
+
+      toolRounds++;
+    } else {
+      break;
+    }
+  }
+
+  return "Could not complete the response. Please try rephrasing your question.";
+}
