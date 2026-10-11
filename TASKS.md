@@ -28,9 +28,9 @@ session restarts, resume from the first unchecked item. Do not redo finished wor
 - [ ] 8. README
 
 ## Human tasks (agent: do NOT do these)
-- [ ] Add ANTHROPIC_API_KEY to .env.local
-- [ ] Provide test addresses (see test-addresses.md)
-- [ ] Save real API responses into fixtures/ (or let agent fetch 1 sample)
+- [ ] Add GROQ_API_KEY to .env.local (CHANGED FROM ANTHROPIC)
+- [ ] Provide test addresses (see test-addresses.md) ✅ DONE
+- [ ] Save real API responses into fixtures/ ✅ DONE
 - [ ] Push repo to GitHub and deploy on Vercel; add env vars there
 - [ ] Verify FAQ and marketing claims against real app behavior
 - [ ] Record demo video, write pitch, submit on Colosseum before deadline
