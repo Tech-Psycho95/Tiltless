@@ -1,6 +1,6 @@
-// AI Trading Coach Agent - Anthropic tool-use loop
+// AI Trading Coach Agent - Groq tool-use loop
 
-import Anthropic from "@anthropic-ai/sdk";
+import Groq from "groq-sdk";
 import {
   getOverview,
   getCoinBreakdown,
@@ -13,15 +13,13 @@ import type {
   HyperliquidFill,
   HyperliquidFunding,
   HyperliquidClearinghouseState,
-  AgentFinding,
-  AutopsyResponse,
 } from "./types";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY || "",
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY || "",
 });
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+const MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 const MAX_TOOL_ROUNDS = 8;
 
 // Cached wallet data for the session
@@ -33,81 +31,99 @@ let cachedState: HyperliquidClearinghouseState | null = null;
 /**
  * Tool definitions for the agent
  */
-const tools: Anthropic.Tool[] = [
+const tools: Groq.Chat.CompletionCreateParams.Tool[] = [
   {
-    name: "get_overview",
-    description:
-      "Get comprehensive overview statistics including total PnL, fees, funding, win rate, profit factor, and time range. Always call this first.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
+    type: "function",
+    function: {
+      name: "get_overview",
+      description:
+        "Get comprehensive overview statistics including total PnL, fees, funding, win rate, profit factor, and time range. Always call this first.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
     },
   },
   {
-    name: "get_coin_breakdown",
-    description:
-      "Get per-coin breakdown showing trades, PnL, fees, net PnL and win rate for each asset traded. Sorted by net PnL descending.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
+    type: "function",
+    function: {
+      name: "get_coin_breakdown",
+      description:
+        "Get per-coin breakdown showing trades, PnL, fees, net PnL and win rate for each asset traded. Sorted by net PnL descending.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
     },
   },
   {
-    name: "get_loss_streak_behavior",
-    description:
-      "Analyze position sizing after consecutive losses (tilt metric). Shows average position size at baseline vs after 1, 2, or 3+ losses. Size multiple > 1.5 indicates revenge trading/tilt.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
+    type: "function",
+    function: {
+      name: "get_loss_streak_behavior",
+      description:
+        "Analyze position sizing after consecutive losses (tilt metric). Shows average position size at baseline vs after 1, 2, or 3+ losses. Size multiple > 1.5 indicates revenge trading/tilt.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
     },
   },
   {
-    name: "get_fee_and_funding_drag",
-    description:
-      "Analyze fee drag and funding costs. Shows total fees, fees as % of gross profit, count of high-fee trades (where fee > 30% of PnL), total funding paid/received.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
+    type: "function",
+    function: {
+      name: "get_fee_and_funding_drag",
+      description:
+        "Analyze fee drag and funding costs. Shows total fees, fees as % of gross profit, count of high-fee trades (where fee > 30% of PnL), total funding paid/received.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
     },
   },
   {
-    name: "get_fills",
-    description:
-      "Get filtered list of fills (capped at 50). Use to investigate specific coins, PnL ranges, or recent trades. DO NOT request all fills without filters.",
-    input_schema: {
-      type: "object",
-      properties: {
-        coin: {
-          type: "string",
-          description: "Filter by coin symbol (e.g., 'BTC', 'ETH', '@107')",
-        },
-        minPnl: {
-          type: "number",
-          description: "Minimum realized PnL (for finding wins)",
-        },
-        maxPnl: {
-          type: "number",
-          description: "Maximum realized PnL (for finding losses)",
-        },
-        limit: {
-          type: "number",
-          description: "Max results to return (default 50, max 50)",
+    type: "function",
+    function: {
+      name: "get_fills",
+      description:
+        "Get filtered list of fills (capped at 50). Use to investigate specific coins, PnL ranges, or recent trades. DO NOT request all fills without filters.",
+      parameters: {
+        type: "object",
+        properties: {
+          coin: {
+            type: "string",
+            description: "Filter by coin symbol (e.g., 'BTC', 'ETH', '@107')",
+          },
+          minPnl: {
+            type: "number",
+            description: "Minimum realized PnL (for finding wins)",
+          },
+          maxPnl: {
+            type: "number",
+            description: "Maximum realized PnL (for finding losses)",
+          },
+          limit: {
+            type: "number",
+            description: "Max results to return (default 50, max 50)",
+          },
         },
       },
     },
   },
   {
-    name: "get_current_positions",
-    description:
-      "Get current open positions and account value from the latest clearinghouse state.",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
+    type: "function",
+    function: {
+      name: "get_current_positions",
+      description:
+        "Get current open positions and account value from the latest clearinghouse state.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
     },
   },
 ];
@@ -267,7 +283,11 @@ export async function runAnalysis(address: string): Promise<{
   }
 
   // Initialize conversation
-  const messages: Anthropic.MessageParam[] = [
+  const messages: Groq.Chat.CompletionCreateParamsNonStreaming["messages"] = [
+    {
+      role: "system",
+      content: SYSTEM_PROMPT,
+    },
     {
       role: "user",
       content: `Analyze the trading behavior for Hyperliquid address ${address}. The wallet has ${cachedFills.length} fills. Investigate and write the autopsy.`,
@@ -279,80 +299,70 @@ export async function runAnalysis(address: string): Promise<{
 
   // Agent loop
   while (toolRounds < MAX_TOOL_ROUNDS) {
-    const response = await anthropic.messages.create({
+    const response = await groq.chat.completions.create({
       model: MODEL,
-      max_tokens: 4000,
-      system: SYSTEM_PROMPT,
-      tools,
       messages,
+      tools,
+      tool_choice: "auto",
+      max_tokens: 4000,
+      temperature: 0.7,
     });
 
-    console.log(`[AGENT] Round ${toolRounds + 1}, stop_reason: ${response.stop_reason}`);
+    const message = response.choices[0]?.message;
+    if (!message) break;
+
+    console.log(`[AGENT] Round ${toolRounds + 1}, finish_reason: ${response.choices[0]?.finish_reason}`);
 
     // Check if agent is done
-    if (response.stop_reason === "end_turn") {
-      // Extract final text
-      const textContent = response.content.find((c) => c.type === "text");
-      if (textContent && textContent.type === "text") {
-        return {
-          autopsy: textContent.text,
-          toolCalls,
-        };
-      }
+    if (response.choices[0]?.finish_reason === "stop" && message.content) {
+      return {
+        autopsy: message.content,
+        toolCalls,
+      };
     }
 
-    // Process tool uses
-    if (response.stop_reason === "tool_use") {
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    // Process tool calls
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      // Add assistant message with tool calls
+      messages.push(message);
 
-      for (const content of response.content) {
-        if (content.type === "tool_use") {
-          try {
-            const result = await executeTool(content.name, content.input as Record<string, any>);
-            toolCalls.push({
-              tool: content.name,
-              input: content.input,
-              output: result,
-            });
+      for (const toolCall of message.tool_calls) {
+        try {
+          const functionName = toolCall.function.name;
+          const functionArgs = JSON.parse(toolCall.function.arguments);
 
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: content.id,
-              content: JSON.stringify(result, null, 2),
-            });
-          } catch (error) {
-            console.error(`[AGENT] Tool error:`, error);
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: content.id,
-              content: `Error: ${error instanceof Error ? error.message : String(error)}`,
-              is_error: true,
-            });
-          }
+          const result = await executeTool(functionName, functionArgs);
+          toolCalls.push({
+            tool: functionName,
+            input: functionArgs,
+            output: result,
+          });
+
+          // Add tool result message
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(result, null, 2),
+          });
+        } catch (error) {
+          console.error(`[AGENT] Tool error:`, error);
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+          });
         }
       }
 
-      // Add assistant message and tool results
-      messages.push({
-        role: "assistant",
-        content: response.content,
-      });
-
-      messages.push({
-        role: "user",
-        content: toolResults,
-      });
-
       toolRounds++;
     } else {
-      // Unexpected stop reason
-      console.warn(`[AGENT] Unexpected stop_reason: ${response.stop_reason}`);
+      // No tool calls and not stopped - unexpected
+      console.warn(`[AGENT] Unexpected state: ${response.choices[0]?.finish_reason}`);
       break;
     }
   }
 
   // Max rounds reached
-  const textContent = messages[messages.length - 1];
   return {
     autopsy:
       "Analysis incomplete: reached maximum tool rounds. The agent investigated but did not finish the autopsy. Try again or contact support.",
@@ -366,7 +376,7 @@ export async function runAnalysis(address: string): Promise<{
 export async function runChat(
   address: string,
   question: string,
-  conversationHistory: Anthropic.MessageParam[] = []
+  conversationHistory: Groq.Chat.CompletionCreateParamsNonStreaming["messages"] = []
 ): Promise<string> {
   // Ensure we have cached data
   if (cachedAddress !== address || cachedFills.length === 0) {
@@ -378,7 +388,11 @@ export async function runChat(
     cachedState = walletData.clearinghouseState;
   }
 
-  const messages: Anthropic.MessageParam[] = [
+  const messages: Groq.Chat.CompletionCreateParamsNonStreaming["messages"] = [
+    {
+      role: "system",
+      content: SYSTEM_PROMPT,
+    },
     ...conversationHistory,
     {
       role: "user",
@@ -389,53 +403,45 @@ export async function runChat(
   let toolRounds = 0;
 
   while (toolRounds < MAX_TOOL_ROUNDS) {
-    const response = await anthropic.messages.create({
+    const response = await groq.chat.completions.create({
       model: MODEL,
-      max_tokens: 2000,
-      system: SYSTEM_PROMPT,
-      tools,
       messages,
+      tools,
+      tool_choice: "auto",
+      max_tokens: 2000,
+      temperature: 0.7,
     });
 
-    if (response.stop_reason === "end_turn") {
-      const textContent = response.content.find((c) => c.type === "text");
-      if (textContent && textContent.type === "text") {
-        return textContent.text;
-      }
+    const message = response.choices[0]?.message;
+    if (!message) break;
+
+    if (response.choices[0]?.finish_reason === "stop" && message.content) {
+      return message.content;
     }
 
-    if (response.stop_reason === "tool_use") {
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      messages.push(message);
 
-      for (const content of response.content) {
-        if (content.type === "tool_use") {
-          try {
-            const result = await executeTool(content.name, content.input as Record<string, any>);
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: content.id,
-              content: JSON.stringify(result, null, 2),
-            });
-          } catch (error) {
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: content.id,
-              content: `Error: ${error instanceof Error ? error.message : String(error)}`,
-              is_error: true,
-            });
-          }
+      for (const toolCall of message.tool_calls) {
+        try {
+          const functionName = toolCall.function.name;
+          const functionArgs = JSON.parse(toolCall.function.arguments);
+
+          const result = await executeTool(functionName, functionArgs);
+
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(result, null, 2),
+          });
+        } catch (error) {
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+          });
         }
       }
-
-      messages.push({
-        role: "assistant",
-        content: response.content,
-      });
-
-      messages.push({
-        role: "user",
-        content: toolResults,
-      });
 
       toolRounds++;
     } else {

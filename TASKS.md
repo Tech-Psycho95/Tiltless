@@ -5,9 +5,9 @@ any blocker, and update the "Current status" block after every step. If this
 session restarts, resume from the first unchecked item. Do not redo finished work.
 
 ## Current status
-- Last completed step: Step 2c - agent.ts and API routes complete ✅
-- Currently working on: Testing the agent with a real address
-- Blockers: Need ANTHROPIC_API_KEY in .env.local
+- Last completed step: Minimal UI complete and wired to backend ✅
+- Currently working on: Waiting for ANTHROPIC_API_KEY to test end-to-end
+- Blockers: **Need ANTHROPIC_API_KEY in .env.local to test the agent**
 
 ## Step 0: Orient
 - [x] Read AGENTS.md, docs/hyperliquid-api.md, DESIGN.md, test-addresses.md
@@ -21,8 +21,8 @@ session restarts, resume from the first unchecked item. Do not redo finished wor
 - [x] 3. stats.ts + unit tests on fixtures/ - deterministic metrics complete
 - [x] 4a. agent.ts - Anthropic tool-use loop with 6 tools complete
 - [x] 4b. /api/analyze and /api/chat routes complete
-- [ ] 4c. UI from stats only (CHECKPOINT: works end to end)
-- [ ] 5. Wire existing UI to routes (if UI exists)
+- [x] 4c. Minimal UI wired to backend - address input, results, chat
+- [ ] 5. Test the agent end-to-end with real address (NEED API KEY)
 - [ ] 6. Error and empty states; rate limit; token cap
 - [ ] 7. Deployment prep: maxDuration, env var list, prod build tested locally
 - [ ] 8. README

@@ -28,8 +28,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Check for API key
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.error("[API] ANTHROPIC_API_KEY not configured");
+    if (!process.env.GROQ_API_KEY) {
+      console.error("[API] GROQ_API_KEY not configured");
       return NextResponse.json(
         { error: "Server configuration error: AI service not available" },
         { status: 500 }
