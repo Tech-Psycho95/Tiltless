@@ -308,7 +308,7 @@ export async function runAnalysis(address: string): Promise<{
       for (const content of response.content) {
         if (content.type === "tool_use") {
           try {
-            const result = await executeTool(content.name, content.input);
+            const result = await executeTool(content.name, content.input as Record<string, any>);
             toolCalls.push({
               tool: content.name,
               input: content.input,
@@ -410,7 +410,7 @@ export async function runChat(
       for (const content of response.content) {
         if (content.type === "tool_use") {
           try {
-            const result = await executeTool(content.name, content.input);
+            const result = await executeTool(content.name, content.input as Record<string, any>);
             toolResults.push({
               type: "tool_result",
               tool_use_id: content.id,
