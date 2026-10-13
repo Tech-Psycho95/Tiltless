@@ -1,3 +1,10 @@
+<div align="center">
+<a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&duration=4821&pause=1000&color=2D0FF7&background=B4FF0100&center=true&vCenter=true&repeat=false&width=435&height=126&lines=Tiltless" alt="Typing SVG" /></a>
+</div>
+<div align="center">
+<img src="https://github.com/Tech-Psycho95/Tiltless/blob/main/Tiltless-logo.png" height="100%", width="30%"/>
+</div>
+
 # Tiltless
 
 An AI trading coach for Hyperliquid wallets. Analyzes trading behavior, detects tilt patterns, and provides actionable insights.
