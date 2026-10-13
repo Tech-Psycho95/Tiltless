@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# planning docs, backups, test dumps
+*.md
+!README.md
+Tiltless-BACKUP-*/
+api-response*.json

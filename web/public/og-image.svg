@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#07090B"/>
+  <circle cx="950" cy="100" r="300" fill="#97FCE4" opacity=".08"/>
+  <text x="90" y="250" fill="#97FCE4" font-family="Arial, sans-serif" font-size="72" font-weight="700">Tiltless.</text>
+  <text x="90" y="335" fill="#F8FAFC" font-family="Arial, sans-serif" font-size="42" font-weight="700">Your PnL shows what happened.</text>
+  <text x="90" y="395" fill="#F8FAFC" font-family="Arial, sans-serif" font-size="42" font-weight="700">Tiltless shows why.</text>
+  <path d="M90 485 C270 430 330 520 510 465 S780 440 1060 500" fill="none" stroke="#97FCE4" stroke-width="5" opacity=".8"/>
+</svg>

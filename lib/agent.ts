@@ -14,6 +14,7 @@ import type {
   HyperliquidFunding,
   HyperliquidClearinghouseState,
 } from "./types";
+import { StructuredAutopsySchema, type StructuredAutopsy } from "./autopsy-schema";
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY || "",
@@ -138,30 +139,56 @@ const tools: Array<{
 /**
  * System prompt for the trading coach agent
  */
-const SYSTEM_PROMPT = `You are a trading behavior analyst for Hyperliquid perpetual futures traders. Your job is to investigate a wallet's trading history and write a plain-English autopsy backed by evidence.
+const SYSTEM_PROMPT = `You are a trading behavior analyst for Hyperliquid perpetual futures traders. Your job is to investigate a wallet's trading history and return a structured analysis in JSON format.
 
 RULES:
 1. Use tools to gather evidence before claiming anything. Never calculate or invent statistics yourself.
 2. Only state numbers returned by tools. All metrics are computed server-side in code.
-3. Cite evidence for each finding: coin names, trade counts, time ranges, exact numbers.
-4. Describe behavior and patterns. NEVER give financial advice or tell the user to buy/sell.
-5. If data is thin (< 20 trades), say so and keep findings brief.
-6. Limit tool use to ${MAX_TOOL_ROUNDS} rounds maximum.
+3. NO MARKDOWN. NO TABLES. NO RAW FIELD NAMES. Use human-readable labels and formatted values.
+4. Format all numbers: use $1.37M for millions, 65.3% for percentages, UTC dates for timestamps.
+5. Never output raw field names like "totalFundingPaid" or "tradeCount". Use "Total funding paid: $1,234" or "2,000 trades".
+6. Plain, neutral tone. NO EMOJIS. NO FINANCIAL ADVICE.
+7. State the data window: "Based on the last 2,000 fills, Jan 15 2025 to Feb 20 2025 UTC"
+8. Max 3 findings, ordered by impact (most critical first).
+9. Every number must come from a tool result. Cite evidence for each finding.
 
-OUTPUT STRUCTURE:
-1. Summary (2-3 sentences): Overall performance and key insight
-2. Top 3 Findings (each with evidence):
-   - Title (5-7 words)
-   - Description (2-3 sentences with specific numbers and coins)
-   - Evidence (trade count, time range, or coin list)
-3. One thing to try differently (framed as an observation, NOT advice):
-   - "Consider X" or "Worth noting that Y" (1-2 sentences)
+OUTPUT FORMAT (JSON only):
+{
+  "walletType": "<brief classification: e.g. 'High-frequency trader', 'Conservative swing trader', 'Tilt-prone scalper'>",
+  "dataWindow": {
+    "from": "<UTC date string YYYY-MM-DD>",
+    "to": "<UTC date string YYYY-MM-DD>",
+    "fillCount": <number>,
+    "capped": <boolean: true if hit API limits>
+  },
+  "headline": "<impactful one-liner, 8-12 words>",
+  "summary": "<2-3 sentences: overall performance and key insight>",
+  "findings": [
+    {
+      "title": "<5-7 words, no jargon>",
+      "severity": "<'info' | 'warn' | 'critical'>",
+      "explanation": "<2-3 sentences with specific formatted numbers and asset names>",
+      "evidence": [
+        {"label": "<human label>", "value": "<formatted value with units>"},
+        {"label": "<human label>", "value": "<formatted value with units>"}
+      ]
+    }
+  ],
+  "behaviorNote": "<optional: 1-2 sentences noting a pattern, framed neutrally>",
+  "caveats": ["<caveat 1>", "<caveat 2>"]
+}
 
-EVIDENCE EXAMPLES:
-- "38 trades on BTC between Jan 15-Feb 20"
-- "5 trades where fee exceeded 30% of gross PnL"
-- "Position size rose 2.1x after 3+ consecutive losses"
-- "Weekend long positions cost $310 in funding"
+SEVERITY GUIDE:
+- "critical": Major pattern causing significant losses (tilt, extreme fee drag)
+- "warn": Problematic but not catastrophic (concentration risk, funding bleed)
+- "info": Neutral observation or positive note
+
+EVIDENCE FORMAT EXAMPLES:
+- {"label": "Trades analyzed", "value": "2,000 fills"}
+- {"label": "Period", "value": "Jan 15 - Feb 20, 2025 UTC"}
+- {"label": "Net loss", "value": "$21,302"}
+- {"label": "Size increase after losses", "value": "1.58x baseline"}
+- {"label": "High-fee trades", "value": "409 (20% of total)"}
 
 BEHAVIORAL FOCUS:
 - Overtrading (high trade count vs PnL)
@@ -169,9 +196,9 @@ BEHAVIORAL FOCUS:
 - Revenge trading after losses (size creep, tilt)
 - Funding bleed (holding expensive positions)
 - Coin concentration (too much in one asset)
-- Size discipline (leverage creep)
 
-Start by calling get_overview, then investigate specific patterns you see.`;
+Start by calling get_overview, then investigate patterns. Return ONLY valid JSON matching the schema above.`;
+
 
 /**
  * Execute a tool call
@@ -264,7 +291,7 @@ async function executeTool(
  * Run the agent loop
  */
 export async function runAnalysis(address: string): Promise<{
-  autopsy: string;
+  autopsy: StructuredAutopsy;
   toolCalls: Array<{ tool: string; input: any; output: any }>;
 }> {
   // Fetch and cache wallet data
@@ -283,8 +310,20 @@ export async function runAnalysis(address: string): Promise<{
   // Check if data is too sparse
   if (cachedFills.length < 5) {
     return {
-      autopsy:
-        "This wallet has fewer than 5 trades recorded. Not enough data to provide meaningful analysis. Try a more active address.",
+      autopsy: {
+        walletType: "Inactive wallet",
+        dataWindow: {
+          from: "N/A",
+          to: "N/A",
+          fillCount: cachedFills.length,
+          capped: false,
+        },
+        headline: "Insufficient data for meaningful analysis",
+        summary: "This wallet has fewer than 5 trades recorded. Not enough data to provide meaningful analysis. Try a more active address.",
+        findings: [],
+        behaviorNote: undefined,
+        caveats: ["Analysis requires at least 5 trades to identify patterns."],
+      },
       toolCalls: [],
     };
   }
@@ -322,8 +361,45 @@ export async function runAnalysis(address: string): Promise<{
 
     // Check if agent is done
     if (response.choices[0]?.finish_reason === "stop" && message.content) {
+      // Parse and validate JSON response with retry
+      let parsedAutopsyResult = parseAndValidateAutopsy(message.content);
+      
+      if (parsedAutopsyResult.success) {
+        return {
+          autopsy: parsedAutopsyResult.data,
+          toolCalls,
+        };
+      }
+      
+      // Invalid JSON - retry once
+      console.log(`[AGENT] Invalid JSON response, retrying... Error: ${parsedAutopsyResult.error}`);
+      messages.push({
+        role: "user",
+        content: `Your previous response was invalid JSON. Error: ${parsedAutopsyResult.error}. Please return ONLY valid JSON matching the schema with no markdown formatting or extra text.`,
+      });
+      
+      const retryResponse = await groq.chat.completions.create({
+        model: MODEL,
+        messages,
+        max_tokens: 4000,
+        temperature: 0.5,
+      });
+      
+      const retryMessage = retryResponse.choices[0]?.message?.content;
+      if (retryMessage) {
+        const retryResult = parseAndValidateAutopsy(retryMessage);
+        if (retryResult.success) {
+          return {
+            autopsy: retryResult.data,
+            toolCalls,
+          };
+        }
+        console.error("[AGENT] Retry also failed:", retryResult.error);
+      }
+      
+      // Both attempts failed - return fallback
       return {
-        autopsy: message.content,
+        autopsy: createFallbackAutopsy(cachedFills, message.content),
         toolCalls,
       };
     }
@@ -371,8 +447,10 @@ export async function runAnalysis(address: string): Promise<{
 
   // Max rounds reached
   return {
-    autopsy:
-      "Analysis incomplete: reached maximum tool rounds. The agent investigated but did not finish the autopsy. Try again or contact support.",
+    autopsy: createFallbackAutopsy(
+      cachedFills,
+      "Analysis incomplete: reached maximum tool rounds. The agent investigated but did not finish the autopsy."
+    ),
     toolCalls,
   };
 }
@@ -457,4 +535,80 @@ export async function runChat(
   }
 
   return "Could not complete the response. Please try rephrasing your question.";
+}
+
+
+/**
+ * Parse and validate autopsy JSON with Zod
+ */
+function parseAndValidateAutopsy(content: string): 
+  | { success: true; data: StructuredAutopsy }
+  | { success: false; error: string } {
+  try {
+    // Try to extract JSON from markdown code blocks if present
+    let jsonStr = content.trim();
+    const jsonMatch = jsonStr.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1];
+    }
+    
+    const parsed = JSON.parse(jsonStr);
+    const validated = StructuredAutopsySchema.parse(parsed);
+    return { success: true, data: validated };
+  } catch (error) {
+    if (error instanceof Error) {
+      return { success: false, error: error.message };
+    }
+    return { success: false, error: String(error) };
+  }
+}
+
+/**
+ * Create fallback autopsy when parsing fails
+ */
+function createFallbackAutopsy(fills: HyperliquidFill[], rawContent: string): StructuredAutopsy {
+  const overview = getOverview(fills, cachedFunding);
+  const firstFill = fills[0];
+  const lastFill = fills[fills.length - 1];
+  
+  return {
+    walletType: "Unable to classify",
+    dataWindow: {
+      from: firstFill ? new Date(firstFill.time).toISOString().split('T')[0] : "N/A",
+      to: lastFill ? new Date(lastFill.time).toISOString().split('T')[0] : "N/A",
+      fillCount: fills.length,
+      capped: fills.length >= 2000,
+    },
+    headline: "Analysis completed with parsing issues",
+    summary: rawContent.substring(0, 300) + "...",
+    findings: [
+      {
+        title: "Overall Performance",
+        severity: overview.stats.netAfterCosts < 0 ? "warn" : "info",
+        explanation: `Net result after ${fills.length} trades: ${formatCurrency(overview.stats.netAfterCosts)}`,
+        evidence: [
+          { label: "Trades", value: `${fills.length} fills` },
+          { label: "Net PnL", value: formatCurrency(overview.stats.netAfterCosts) },
+        ],
+      },
+    ],
+    behaviorNote: undefined,
+    caveats: ["Analysis formatting encountered issues. Raw metrics are still accurate."],
+  };
+}
+
+/**
+ * Format currency helper
+ */
+function formatCurrency(value: number): string {
+  const absValue = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  
+  if (absValue >= 1000000) {
+    return `${sign}$${(absValue / 1000000).toFixed(2)}M`;
+  }
+  if (absValue >= 1000) {
+    return `${sign}$${(absValue / 1000).toFixed(1)}k`;
+  }
+  return `${sign}$${absValue.toFixed(0)}`;
 }
