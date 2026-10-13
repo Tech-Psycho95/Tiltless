@@ -6,44 +6,27 @@ import { runAnalysis } from "@/lib/agent";
 import { validateAddress } from "@/lib/hyperliquid";
 import { verifyAuth } from "@/lib/auth-middleware";
 import { checkRateLimit } from "@/lib/rate-limiter";
+import { corsHeaders } from "@/lib/cors";
 
-export const maxDuration = 60; // Vercel function timeout: 60 seconds
-
-const ALLOWED_ORIGINS = [
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-];
+// Vercel Pro/Team allows up to 300s, Hobby allows 10s for serverless
+// For analyses taking 75-90s, we need at least 120s
+export const maxDuration = 120; // 2 minutes - should work on Pro plan
 
 export async function OPTIONS(request: NextRequest) {
   const origin = request.headers.get("origin");
   
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    return new NextResponse(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": origin,
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        "Access-Control-Max-Age": "86400",
-      },
-    });
-  }
-
-  return new NextResponse(null, { status: 204 });
+  return new NextResponse(null, {
+    status: 204,
+    headers: corsHeaders(origin),
+  });
 }
 
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...corsHeaders(origin),
   };
-
-  // Add CORS headers if origin is allowed
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    headers["Access-Control-Allow-Origin"] = origin;
-    headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
-    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
-  }
   
   // Verify authentication
   const authHeader = request.headers.get("authorization");
