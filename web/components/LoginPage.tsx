@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import dynamic from 'next/dynamic';
 import { Space_Grotesk } from 'next/font/google';
+import { TiltlessLogo } from './TiltlessLogo';
 
 const CandlestickScene = dynamic(() => import('./CandlestickScene'), {
   ssr: false,
@@ -67,9 +68,7 @@ export function LoginPage() {
             }}
           >
             {/* Logo */}
-            <div className={`${spaceGrotesk.className} text-4xl font-bold tracking-tight text-brand-mint`}>
-              Tiltless.
-            </div>
+            <TiltlessLogo className="scale-125" />
 
             {/* Headline */}
             <h1 className={`${spaceGrotesk.className} text-4xl font-bold leading-tight text-white lg:text-5xl`}>

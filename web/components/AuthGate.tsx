@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
+import { TiltlessLogo } from './TiltlessLogo';
 
 interface AuthGateProps {
   children: React.ReactNode;
@@ -54,9 +55,7 @@ export function AuthGate({ children, requireAuth = true }: AuthGateProps) {
           <div className="mb-6 inline-block">
             <div className="h-16 w-16 animate-spin rounded-full border-4 border-white/10 border-t-brand-mint"></div>
           </div>
-          <div className="font-display text-2xl font-bold tracking-tight text-brand-mint">
-            Tiltless
-          </div>
+          <TiltlessLogo className="justify-center" />
           <div className="mt-2 text-sm text-white/40">Loading...</div>
         </div>
       </div>

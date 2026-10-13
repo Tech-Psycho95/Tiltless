@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth, getShortAddress } from "@/lib/auth";
+import { TiltlessLogo } from "./TiltlessLogo";
 
 const links = [
   ["problem", "Problem"],
@@ -70,8 +71,8 @@ export function SiteNav() {
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
             {/* Left: Logo */}
             <div className="justify-self-start">
-              <a href="#top" className="font-display text-xl font-bold tracking-tight text-brand-mint">
-                Tiltless.
+              <a href="#top" className="inline-block">
+                <TiltlessLogo />
               </a>
             </div>
 
